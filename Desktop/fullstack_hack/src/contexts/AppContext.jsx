@@ -214,13 +214,12 @@ export function AppProvider({ children }) {
   const removeVolunteerFromEvent = useCallback((eventId, volunteerId) => {
     setEvents(prev => prev.map(e =>
       e.id === eventId
-        ? { ...e, assignedVolunteers: e.assignedVolunteers.filter(v => v !== volunteerId) }
+        ? { ...e, assignedVolunteers: (e.assignedVolunteers || []).filter(v => String(v) !== String(volunteerId)) }
         : e
     ));
-    setVolunteers(prev => prev.map(v =>
-      v.id === volunteerId ? { ...v, status: 'removed' } : v
-    ));
-    addToast('Volunteer removed → auto reassignment triggered', 'warning');
+    // Do NOT modify the volunteer's global status here. 
+    // Their status is derived from 'availability' and 'lat/lng' boundary.
+    addToast('Volunteer removed from event', 'warning');
   }, [addToast]);
 
   // ─── Chat (Mock Direct Messages / Custom handling in Chat.jsx) ───

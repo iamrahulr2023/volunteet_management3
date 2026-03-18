@@ -35,6 +35,7 @@ exports.getEvents = async (req, res) => {
     // Admin should only see their own created events
     if (req.user.role === 'admin') {
       filter.createdBy = req.user._id;
+      console.log(`[EventFilter] Admin ${req.user.name} (${req.user._id}) fetching events. Filter applied.`);
     }
 
     const events = await Event.find(filter)

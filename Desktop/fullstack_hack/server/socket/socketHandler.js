@@ -112,6 +112,7 @@ const setupSocket = (io) => {
 
     // LOCATION STREAMING
     socket.on('update_location', ({ lat, lng, eventId }) => {
+      console.log(`[Socket] Location update from ${socket.user.name} for event ${eventId}: ${lat}, ${lng}`);
       // Broadcast to anyone listening for location updates
       io.emit('location_updated', {
         volunteerId: socket.user._id,

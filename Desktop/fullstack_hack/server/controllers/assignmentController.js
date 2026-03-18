@@ -118,6 +118,15 @@ exports.respondToAssignment = async (req, res) => {
           { status: 'removed' }
         );
       }
+
+      // Broadcast update to anyone in the event's assignment room
+      const io = req.app.get('io');
+      io.to(`event_assignments_${event._id}`).emit('assignment_updated', {
+        eventId: event._id,
+        assignmentId: assignment._id,
+        status: response
+      });
+    } else if (response === 'rejected') {
     } else if (response === 'rejected') {
       // Trigger auto-reassignment
       const io = req.app.get('io');
@@ -160,6 +169,13 @@ exports.removeVolunteer = async (req, res) => {
     // Trigger reassignment
     const io = req.app.get('io');
     await reassign(event, [assignment.volunteerId], io);
+
+    // Broadcast update to anyone in the event's assignment room
+    io.to(`event_assignments_${event._id}`).emit('assignment_updated', {
+      eventId: event._id,
+      assignmentId: assignment._id,
+      status: 'removed'
+    });
 
     return apiResponse(res, 200, true, 'Volunteer removed and reassignment triggered', assignment);
   } catch (error) {

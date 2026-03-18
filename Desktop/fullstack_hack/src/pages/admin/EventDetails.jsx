@@ -12,7 +12,7 @@ import { assignmentsAPI } from '../../services/api';
 
 export default function EventDetails() {
   const { id } = useParams();
-  const { events, volunteers, removeVolunteerFromEvent, rateVolunteer, addToast } = useApp();
+  const { events, volunteers, removeVolunteerFromEvent, rateVolunteer, addToast, socket } = useApp();
   const navigate = useNavigate();
   const [showAssign, setShowAssign] = useState(false);
   const [assignMode, setAssignMode] = useState('auto');
@@ -21,27 +21,68 @@ export default function EventDetails() {
   
   const [dbAssignments, setDbAssignments] = useState([]);
   const [loadingAssign, setLoadingAssign] = useState(false);
+  const [liveLocations, setLiveLocations] = useState({});
 
   // Match by string id (MongoDB ObjectId) — support both `id` and `_id`
   const event = events.find(e => String(e.id) === String(id) || String(e._id) === String(id));
+
+  const fetchAssignments = async () => {
+    if (!event) return;
+    try {
+      setLoadingAssign(true);
+      const { data } = await assignmentsAPI.getEventAssignments(event._id || event.id);
+      if (data.success) {
+        setDbAssignments(data.data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch assignments", e);
+    } finally {
+      setLoadingAssign(false);
+    }
+  };
+
+  useEffect(() => {
+    if (event) {
+      fetchAssignments();
+      
+      // Join assignment update room
+      if (socket) {
+        const room = `event_assignments_${event._id || event.id}`;
+        socket.emit('join_room', room); // Re-use join_room for simple assignment updates
+        
+        const handleUpdate = (data) => {
+          if (String(data.eventId) === String(event._id || event.id)) {
+            fetchAssignments();
+          }
+        };
+
+        const handleLocationUpdate = (data) => {
+          console.log('[EventDetails] Received location update:', data);
+          if (String(data.eventId) === String(event._id || event.id)) {
+            setLiveLocations(prev => ({
+              ...prev,
+              [data.volunteerId]: { lat: data.lat, lng: data.lng, timestamp: Date.now() }
+            }));
+          }
+        };
+
+        socket.on('assignment_updated', handleUpdate);
+        socket.on('location_updated', handleLocationUpdate);
+        
+        return () => {
+          socket.off('assignment_updated', handleUpdate);
+          socket.off('location_updated', handleLocationUpdate);
+          // Don't leave assignment-specific rooms if it might affect chat rooms
+          // Unless we use a dedicated leave_room pattern
+        };
+      }
+    }
+  }, [event, socket]);
+
   if (!event) return <div className="text-center py-20 text-gray-500">Event not found</div>;
 
   const typeInfo = EVENT_TYPES.find(t => t.value === event.type);
   
-  useEffect(() => {
-    const fetchAssignments = async () => {
-      try {
-        const { data } = await assignmentsAPI.getEventAssignments(event._id || event.id);
-        if (data.success) {
-          setDbAssignments(data.data);
-        }
-      } catch (e) {
-        console.error("Failed to fetch assignments", e);
-      }
-    };
-    if (event) fetchAssignments();
-  }, [event]);
-
   // Calculate assigned IDs purely from database assignments first
   const dbAssignedIds = dbAssignments
     .filter(a => ['pending', 'accepted'].includes(a.status))
@@ -72,17 +113,6 @@ export default function EventDetails() {
     inactive: { badge: 'badge-orange', text: 'Inactive' },
     out: { badge: 'badge-red', text: 'Out of Boundary ⚠️' },
     removed: { badge: 'badge-gray', text: 'Removed' },
-  };
-
-  const fetchAssignments = async () => {
-    try {
-      const { data } = await assignmentsAPI.getEventAssignments(event._id || event.id);
-      if (data.success) {
-        setDbAssignments(data.data);
-      }
-    } catch (e) {
-      console.error("Failed to fetch assignments", e);
-    }
   };
 
   const handleRemove = async (volId) => {
@@ -188,13 +218,35 @@ export default function EventDetails() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Map */}
+        {/* Map */}
         <div className="lg:col-span-1 card">
           <h3 className="font-semibold text-gray-800 mb-4">Event Location</h3>
           <div className="relative z-0">
             <RealMap
               center={[event.lat || 19.076, event.lng || 72.8777]}
               radius={event.radius}
-              markers={assignedVols.filter(v => v.lat && v.lng).map(v => ({ id: v.id, name: v.name, status: v.status, lat: v.lat, lng: v.lng }))}
+              markers={assignedVols.map(v => {
+                const volId = String(v.id || v._id);
+                const liveLoc = liveLocations[volId];
+                
+                // If they don't have a live location yet, fallback to their global location if they have one,
+                // or event center as absolute fallback to prevent map crash (though we filter below if no valid loc).
+                const fallbackLat = v.lat || event.lat || 19.076;
+                const fallbackLng = v.lng || event.lng || 72.8777;
+
+                const marker = {
+                  id: volId,
+                  name: v.name,
+                  status: v.assignmentStatus === 'accepted' ? 'active' : v.status, // Map status to what RealMap expects
+                  lat: liveLoc ? liveLoc.lat : fallbackLat,
+                  lng: liveLoc ? liveLoc.lng : fallbackLng
+                };
+                return marker;
+              }).filter(v => {
+                const isValid = v.lat && v.lng;
+                if (!isValid) console.warn('[EventDetails] Filtered out invalid marker:', v);
+                return isValid;
+              })}
               showCurrentLocation={true}
               height="280px"
               zoom={14}

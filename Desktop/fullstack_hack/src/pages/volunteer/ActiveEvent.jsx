@@ -15,8 +15,25 @@ export default function ActiveEvent() {
   const timerRef = useRef(null);
   
   // To track live location locally on the map
-  const [myPos, setMyPos] = useState([19.076, 72.8777]);
+  const [myPos, setMyPos] = useState([event?.lat || 19.076, event?.lng || 72.8777]);
   const watchIdRef = useRef(null);
+  const myPosRef = useRef(myPos);
+
+  useEffect(() => {
+    myPosRef.current = myPos;
+  }, [myPos]);
+
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setMyPos([pos.coords.latitude, pos.coords.longitude]);
+        },
+        (err) => console.error('Initial geoloc error:', err),
+        { enableHighAccuracy: true }
+      );
+    }
+  }, []);
 
   // Use the actual event ID if present, else fallback
   const activeEventId = event?._id || event?.id || 'dummy-event-id';
@@ -38,26 +55,47 @@ export default function ActiveEvent() {
     setGeoStatus(newStatus);
     if (newStatus === 'outside') {
       addToast('⚠️ You have left the event boundary!', 'warning');
+      // Simulate moving location out slightly
+      setMyPos([myPosRef.current[0] + 0.005, myPosRef.current[1] + 0.005]);
     } else {
       addToast('✅ Back inside the event area', 'success');
+      // Simulate moving location back in
+      setMyPos([event?.lat || 19.076, event?.lng || 72.8777]);
     }
   };
 
   useEffect(() => {
+    let locInterval;
     if (isWorking) {
       timerRef.current = setInterval(() => {
         setElapsed(prev => prev + 1);
       }, 1000);
       
+      // Emit immediately when starting work
+      if (socket && socket.connected) {
+        socket.emit('update_location', { lat: myPosRef.current[0], lng: myPosRef.current[1], eventId: activeEventId });
+      }
+      
+      // Periodically emit location so if socket drops and reconnects, we still broadcast
+      locInterval = setInterval(() => {
+        if (socket && socket.connected) {
+          console.log('[ActiveEvent] Emitting periodic location:', myPosRef.current);
+          socket.emit('update_location', { lat: myPosRef.current[0], lng: myPosRef.current[1], eventId: activeEventId });
+        }
+      }, 3000);
+
       if (navigator.geolocation && socket) {
         watchIdRef.current = navigator.geolocation.watchPosition(
           (pos) => {
             const { latitude, longitude } = pos.coords;
             setMyPos([latitude, longitude]);
-            // Emit to backend
-            socket.emit('update_location', { lat: latitude, lng: longitude, eventId: activeEventId });
+            // Emit to backend immediately on genuine nav change
+            if (socket.connected) {
+               console.log('[ActiveEvent] Emitting genuine nav location change:', latitude, longitude);
+               socket.emit('update_location', { lat: latitude, lng: longitude, eventId: activeEventId });
+            }
           },
-          (err) => console.error(err),
+          (err) => console.error('Geolocation Error:', err),
           { enableHighAccuracy: true }
         );
       }
@@ -68,9 +106,10 @@ export default function ActiveEvent() {
     }
     return () => { 
       if (timerRef.current) clearInterval(timerRef.current); 
+      if (locInterval) clearInterval(locInterval);
       if (watchIdRef.current && navigator.geolocation) navigator.geolocation.clearWatch(watchIdRef.current);
     };
-  }, [isWorking, socket]);
+  }, [isWorking, socket, activeEventId]);
 
   const formatTime = (seconds) => {
     const h = Math.floor(seconds / 3600);
