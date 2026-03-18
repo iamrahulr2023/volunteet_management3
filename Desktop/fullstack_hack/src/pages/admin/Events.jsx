@@ -4,7 +4,7 @@ import { EVENT_TYPES, SKILLS } from '../../data/mockData';
 import Modal from '../../components/Modal';
 import MultiSelect from '../../components/MultiSelect';
 import RealMap from '../../components/RealMap';
-import { Plus, Calendar, MapPin, Users, Search, Filter, Eye, Crosshair } from 'lucide-react';
+import { Plus, Calendar, MapPin, Users, Search, Filter, Eye, Crosshair, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const statusColors = {
@@ -14,10 +14,11 @@ const statusColors = {
 };
 
 export default function Events() {
-  const { events, addEvent } = useApp();
+  const { events, addEvent, addToast } = useApp();
   const [showCreate, setShowCreate] = useState(false);
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('');
+  const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
 
   const [form, setForm] = useState({
@@ -44,15 +45,22 @@ export default function Events() {
     }
   };
 
-  const handleCreate = (e) => {
+  const handleCreate = async (e) => {
     e.preventDefault();
-    addEvent({
-      ...form,
-      lat: form.lat || 19.076,
-      lng: form.lng || 72.877,
-    });
-    setShowCreate(false);
-    setForm({ name: '', type: 'disaster', location: '', radius: 200, date: '', time: '', requiredVolunteers: 10, requiredSkills: [], assignmentMode: 'auto', lat: null, lng: null });
+    setCreating(true);
+    try {
+      await addEvent({
+        ...form,
+        lat: form.lat || 19.076,
+        lng: form.lng || 72.877,
+      });
+      setShowCreate(false);
+      setForm({ name: '', type: 'disaster', location: '', radius: 200, date: '', time: '', requiredVolunteers: 10, requiredSkills: [], assignmentMode: 'auto', lat: null, lng: null });
+    } catch (err) {
+      // Error toast is already shown by addEvent in context
+    } finally {
+      setCreating(false);
+    }
   };
 
   const filtered = events.filter(e => {
@@ -110,7 +118,7 @@ export default function Events() {
                 </div>
                 <div className="flex items-center gap-2">
                   <Users className="w-4 h-4 text-primary-400" />
-                  {event.assignedVolunteers.length}/{event.requiredVolunteers} volunteers
+                  {(event.assignedVolunteers || []).length}/{event.requiredVolunteers} volunteers
                 </div>
               </div>
               <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap gap-1.5">
@@ -215,8 +223,11 @@ export default function Events() {
             </div>
           </div>
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
-            <button type="button" onClick={() => setShowCreate(false)} className="btn-secondary">Cancel</button>
-            <button type="submit" className="btn-primary">Create Event</button>
+            <button type="button" onClick={() => setShowCreate(false)} className="btn-secondary" disabled={creating}>Cancel</button>
+            <button type="submit" className="btn-primary flex items-center gap-2" disabled={creating}>
+              {creating && <Loader2 className="w-4 h-4 animate-spin" />}
+              {creating ? 'Creating...' : 'Create Event'}
+            </button>
           </div>
         </form>
       </Modal>

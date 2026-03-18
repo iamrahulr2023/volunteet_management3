@@ -1,11 +1,14 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useApp } from '../../contexts/AppContext';
-import { EVENT_TYPES, mockVolunteers } from '../../data/mockData';
+import { EVENT_TYPES } from '../../data/mockData';
 import RealMap from '../../components/RealMap';
 import StarRating from '../../components/StarRating';
 import Modal from '../../components/Modal';
 import { useState } from 'react';
 import { ArrowLeft, MapPin, Calendar, Users, Clock, Trash2, UserPlus, ShieldCheck, Filter, Search } from 'lucide-react';
+
+import { useEffect } from 'react';
+import { assignmentsAPI } from '../../services/api';
 
 export default function EventDetails() {
   const { id } = useParams();
@@ -15,33 +18,146 @@ export default function EventDetails() {
   const [assignMode, setAssignMode] = useState('auto');
   const [selectedVols, setSelectedVols] = useState([]);
   const [searchAssign, setSearchAssign] = useState('');
+  
+  const [dbAssignments, setDbAssignments] = useState([]);
+  const [loadingAssign, setLoadingAssign] = useState(false);
 
-  const event = events.find(e => e.id === parseInt(id));
+  // Match by string id (MongoDB ObjectId) — support both `id` and `_id`
+  const event = events.find(e => String(e.id) === String(id) || String(e._id) === String(id));
   if (!event) return <div className="text-center py-20 text-gray-500">Event not found</div>;
 
   const typeInfo = EVENT_TYPES.find(t => t.value === event.type);
-  const assignedVols = volunteers.filter(v => event.assignedVolunteers.includes(v.id));
-  const unassignedVols = volunteers.filter(v => !event.assignedVolunteers.includes(v.id));
+  
+  useEffect(() => {
+    const fetchAssignments = async () => {
+      try {
+        const { data } = await assignmentsAPI.getEventAssignments(event._id || event.id);
+        if (data.success) {
+          setDbAssignments(data.data);
+        }
+      } catch (e) {
+        console.error("Failed to fetch assignments", e);
+      }
+    };
+    if (event) fetchAssignments();
+  }, [event]);
+
+  // Calculate assigned IDs purely from database assignments first
+  const dbAssignedIds = dbAssignments
+    .filter(a => ['pending', 'accepted'].includes(a.status))
+    .map(a => String(a.volunteerId?._id || a.volunteerId));
+
+  // Merge with mock context but filter out any that might have been removed in DB
+  const removedIds = dbAssignments
+    .filter(a => ['rejected', 'removed'].includes(a.status))
+    .map(a => String(a.volunteerId?._id || a.volunteerId));
+
+  const assignedIds = [
+    ...dbAssignedIds,
+    ...(event.assignedVolunteers || []).filter(id => !removedIds.includes(String(id)))
+  ];
+  
+  const assignedVols = volunteers.filter(v => assignedIds.includes(String(v.id)) || assignedIds.includes(String(v._id))).map(vol => {
+    const volId = String(vol.id || vol._id);
+    const assignment = dbAssignments.find(a => String(a.volunteerId?._id || a.volunteerId) === volId);
+    return {
+      ...vol,
+      assignmentStatus: assignment ? assignment.status : 'accepted'
+    };
+  });
+  const unassignedVols = volunteers.filter(v => (!assignedIds.includes(String(v.id)) && !assignedIds.includes(String(v._id)) && v.status === 'active'));
 
   const statusStyles = {
     active: { badge: 'badge-green', text: 'Active ✅' },
+    inactive: { badge: 'badge-orange', text: 'Inactive' },
     out: { badge: 'badge-red', text: 'Out of Boundary ⚠️' },
     removed: { badge: 'badge-gray', text: 'Removed' },
   };
 
-  const handleRemove = (volId) => {
-    removeVolunteerFromEvent(event.id, volId);
+  const fetchAssignments = async () => {
+    try {
+      const { data } = await assignmentsAPI.getEventAssignments(event._id || event.id);
+      if (data.success) {
+        setDbAssignments(data.data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch assignments", e);
+    }
   };
 
-  const handleAssign = () => {
-    addToast(`${selectedVols.length} volunteer(s) assigned successfully!`, 'success');
-    setShowAssign(false);
-    setSelectedVols([]);
+  const handleRemove = async (volId) => {
+    try {
+      const match = dbAssignments.find(a => String(a.volunteerId?._id || a.volunteerId) === String(volId));
+      if (match) {
+        const { data } = await assignmentsAPI.remove(match._id);
+        if (data.success) {
+          addToast('Volunteer removed from event!', 'success');
+          // Refetch to get the latest assignments (including auto-reassignments)
+          await fetchAssignments();
+        }
+      } else {
+        removeVolunteerFromEvent(event.id || event._id, volId);
+        addToast('Volunteer removed from event', 'success');
+      }
+    } catch (e) {
+      console.error(e);
+      addToast('Failed to remove volunteer', 'danger');
+    }
+  };
+
+  const handleAssign = async () => {
+    setLoadingAssign(true);
+    try {
+      if (assignMode === 'auto') {
+        const { data } = await assignmentsAPI.autoAssign(event._id || event.id);
+        addToast(`${data.data.length} volunteer(s) auto-assigned successfully!`, 'success');
+        setDbAssignments(prev => [...prev, ...data.data]);
+      } else {
+        const { data } = await assignmentsAPI.manualAssign(event._id || event.id, selectedVols);
+        addToast(`${data.data.length} volunteer(s) manually assigned!`, 'success');
+        setDbAssignments(prev => [...prev, ...data.data]);
+      }
+      setShowAssign(false);
+      setSelectedVols([]);
+    } catch (e) {
+      addToast(e.response?.data?.message || 'Assignment failed', 'danger');
+    } finally {
+      setLoadingAssign(false);
+    }
+  };
+
+  const calculateDistance = (lat1, lng1, lat2, lng2) => {
+    const R = 6371; // km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLng/2) * Math.sin(dLng/2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   };
 
   const filteredUnassigned = unassignedVols
     .filter(v => !searchAssign || v.name.toLowerCase().includes(searchAssign.toLowerCase()))
-    .sort((a, b) => b.rating - a.rating);
+    .map(v => {
+      let score = 0;
+      let skillMatchCount = 0;
+      if (event.requiredSkills && event.requiredSkills.length > 0) {
+        skillMatchCount = v.skills?.filter(s => 
+          event.requiredSkills.map(rs => rs.toLowerCase()).includes(s.toLowerCase())
+        ).length || 0;
+      }
+      
+      const distance = calculateDistance(v.lat || 0, v.lng || 0, event.lat || 0, event.lng || 0);
+      const isWithinDistance = distance <= event.radius;
+      
+      score += skillMatchCount * 50;
+      if (isWithinDistance) score += 20;
+      score -= distance;
+      score += v.rating * 5;
+      
+      return { ...v, score, skillMatchCount, distance, isWithinDistance };
+    })
+    .sort((a, b) => b.score - a.score);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -74,17 +190,19 @@ export default function EventDetails() {
         {/* Map */}
         <div className="lg:col-span-1 card">
           <h3 className="font-semibold text-gray-800 mb-4">Event Location</h3>
-          <RealMap
-            center={[event.lat, event.lng]}
-            radius={event.radius}
-            markers={assignedVols.filter(v => v.lat && v.lng).map(v => ({ id: v.id, name: v.name, status: v.status, lat: v.lat, lng: v.lng }))}
-            showCurrentLocation={true}
-            height="280px"
-            zoom={14}
-          />
+          <div className="relative z-0">
+            <RealMap
+              center={[event.lat || 19.076, event.lng || 72.8777]}
+              radius={event.radius}
+              markers={assignedVols.filter(v => v.lat && v.lng).map(v => ({ id: v.id, name: v.name, status: v.status, lat: v.lat, lng: v.lng }))}
+              showCurrentLocation={true}
+              height="280px"
+              zoom={14}
+            />
+          </div>
           <div className="mt-3 text-sm text-gray-500">
-            <p>Radius: <span className="font-semibold text-gray-800">{event.radius}m</span></p>
-            <p>Type: <span className="font-semibold text-gray-800">{typeInfo?.label}</span></p>
+            <p>Radius: <span className="font-semibold text-gray-800">{event.radius}km</span></p>
+            <p>Type: <span className="font-semibold text-gray-800">{typeInfo?.label || event.type}</span></p>
           </div>
         </div>
 
@@ -110,15 +228,17 @@ export default function EventDetails() {
                   <div>
                     <p className="font-semibold text-gray-800">{vol.name}</p>
                     <div className="flex items-center gap-3 text-sm text-gray-500">
-                      <span>{vol.skills.join(', ')}</span>
+                      <span>{(vol.skills || []).join(', ')}</span>
                     </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-4">
                   <StarRating rating={vol.rating} size="sm" readOnly onRate={(r) => rateVolunteer(vol.id, r)} />
-                  <span className={statusStyles[vol.status]?.badge || 'badge-gray'}>
-                    {statusStyles[vol.status]?.text || vol.status}
-                  </span>
+                  {vol.assignmentStatus === 'pending' ? (
+                    <span className="badge-orange">Requested</span>
+                  ) : (
+                    <span className="badge-green">Assigned</span>
+                  )}
                   <button
                     onClick={() => handleRemove(vol.id)}
                     className="p-2 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
@@ -162,12 +282,11 @@ export default function EventDetails() {
                     <div className="w-9 h-9 bg-primary-100 rounded-full flex items-center justify-center text-primary-600 text-sm font-semibold">{vol.avatar}</div>
                     <div>
                       <p className="font-medium text-gray-800">{vol.name}</p>
-                      <p className="text-xs text-gray-500">{vol.skills.join(', ')}</p>
+                      <p className="text-xs text-gray-500">{(vol.skills || []).join(', ')}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     <StarRating rating={vol.rating} size="sm" readOnly />
-                    <span className="text-xs text-gray-500">{vol.location}</span>
                   </div>
                 </div>
               ))}
@@ -191,7 +310,7 @@ export default function EventDetails() {
                   <div className="w-9 h-9 bg-primary-100 rounded-full flex items-center justify-center text-primary-600 text-sm font-semibold">{vol.avatar}</div>
                   <div className="flex-1">
                     <p className="font-medium text-gray-800 text-sm">{vol.name}</p>
-                    <p className="text-xs text-gray-500">{vol.skills.join(', ')}</p>
+                    <p className="text-xs text-gray-500">{(vol.skills || []).join(', ')}</p>
                   </div>
                   <StarRating rating={vol.rating} size="sm" readOnly />
                 </label>

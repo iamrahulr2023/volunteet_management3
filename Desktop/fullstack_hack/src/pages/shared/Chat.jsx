@@ -1,10 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
 import { useApp } from '../../contexts/AppContext';
-import { Send, Hash, User, MessageCircle, Users } from 'lucide-react';
+import { Send, Hash, User, MessageCircle, Users, Trash2 } from 'lucide-react';
+import { chatAPI } from '../../services/api';
 
 export default function Chat() {
-  const { groupMessages, addGroupMessage, directMessages, addDirectMessage, user } = useApp();
-  const [activeTab, setActiveTab] = useState('group');
+  const { user, socket, addToast } = useApp();
+  const [chats, setChats] = useState([]);
+  const [activeChat, setActiveChat] = useState(null); // the selected chat object
+  const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState('');
   const messagesEndRef = useRef(null);
   const isAdmin = user?.role === 'admin';
@@ -15,40 +18,93 @@ export default function Chat() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [groupMessages, directMessages, activeTab]);
+  }, [messages, activeChat]);
+
+  // Fetch all chats
+  const loadChats = async () => {
+    try {
+      const { data } = await chatAPI.getMyChats();
+      if (data.success) {
+        setChats(data.data);
+        if (data.data.length > 0 && !activeChat) {
+          setActiveChat(data.data[0]);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load chats", error);
+    }
+  };
+
+  useEffect(() => {
+    loadChats();
+  }, []);
+
+  // Fetch messages when a chat is strictly selected
+  useEffect(() => {
+    if (!activeChat) return;
+
+    const fetchMessages = async () => {
+      try {
+        const { data } = await chatAPI.getChat(activeChat.eventId._id);
+        if (data.success && data.data) {
+          setMessages(data.data.messages || []);
+        }
+      } catch (error) {
+        console.error("Failed to fetch messages", error);
+      }
+    };
+
+    fetchMessages();
+
+    if (socket) {
+      socket.emit('join_room', activeChat.eventId._id);
+
+      socket.on('receive_message', (msg) => {
+        // Only add if it's for the currently active chat event room
+        if (msg.eventId === activeChat.eventId._id) {
+          setMessages((prev) => [...prev, msg]);
+        }
+      });
+
+      socket.on('chat_deleted', (data) => {
+        if (data.eventId === activeChat.eventId._id) {
+          addToast(data.message, 'warning');
+          setChats(prev => prev.filter(c => c.eventId._id !== data.eventId));
+          setActiveChat(null);
+          setMessages([]);
+        }
+      });
+
+      return () => {
+        socket.emit('leave_room', activeChat.eventId._id);
+        socket.off('receive_message');
+        socket.off('chat_deleted');
+      };
+    }
+  }, [activeChat, socket, addToast]);
 
   const handleSend = (e) => {
     e.preventDefault();
-    if (!message.trim()) return;
+    if (!message.trim() || !activeChat || !socket) return;
 
-    if (activeTab === 'group') {
-      addGroupMessage(message, isAdmin ? 'Admin (NGO)' : (user?.name || 'Volunteer'), isAdmin);
-      // Simulate a reply after a delay
-      if (!isAdmin) {
-        setTimeout(() => {
-          addGroupMessage('Thanks for the update! Keep up the great work. 👍', 'Admin (NGO)', true);
-        }, 2000);
-      }
-    } else {
-      addDirectMessage(message, isAdmin ? 'Admin' : (user?.name || 'Volunteer'), isAdmin);
-      // Simulate a reply
-      setTimeout(() => {
-        if (isAdmin) {
-          addDirectMessage('Got it, thanks! I\'ll be there shortly.', 'Aarav Sharma', false);
-        } else {
-          addDirectMessage('Great, let me check and get back to you.', 'Admin', true);
-        }
-      }, 1500);
-    }
+    socket.emit('send_message', { eventId: activeChat.eventId._id, text: message });
     setMessage('');
   };
 
-  const currentMessages = activeTab === 'group' ? groupMessages : directMessages;
+  const handleDeleteChat = async () => {
+    if (!activeChat || !isAdmin) return;
+    if (!window.confirm("Are you sure you want to delete this group chat?")) return;
 
-  const chatContacts = [
-    { id: 'group', name: 'Flood Relief Camp', type: 'group', lastMsg: 'Admin: Please check in once you arrive', unread: 3 },
-    { id: 'direct', name: isAdmin ? 'Aarav Sharma' : 'Admin (NGO)', type: 'direct', lastMsg: 'Can you lead the medical team?', unread: 1 },
-  ];
+    try {
+      await chatAPI.deleteChat(activeChat.eventId._id);
+      addToast('Chat deleted successfully', 'success');
+      setChats(prev => prev.filter(c => c.eventId._id !== activeChat.eventId._id));
+      setActiveChat(null);
+      setMessages([]);
+    } catch (e) {
+      addToast('Failed to delete chat', 'danger');
+    }
+  };
 
   return (
     <div className="animate-fade-in h-[calc(100vh-7rem)]">
@@ -61,28 +117,25 @@ export default function Chat() {
             </h2>
           </div>
           <div className="flex-1 overflow-y-auto">
-            {chatContacts.map(contact => (
+            {chats.length === 0 && (
+              <p className="text-gray-400 p-4 text-center text-sm">No group chats yet</p>
+            )}
+            {chats.map(chat => (
               <button
-                key={contact.id}
-                onClick={() => setActiveTab(contact.id === 'group' ? 'group' : 'direct')}
+                key={chat._id}
+                onClick={() => setActiveChat(chat)}
                 className={`w-full flex items-center gap-3 p-4 hover:bg-gray-50 transition-colors text-left ${
-                  (contact.id === 'group' && activeTab === 'group') || (contact.id === 'direct' && activeTab === 'direct')
-                    ? 'bg-primary-50 border-r-2 border-primary-500' : ''
+                  activeChat?._id === chat._id ? 'bg-primary-50 border-r-2 border-primary-500' : ''
                 }`}
               >
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                  contact.type === 'group' ? 'bg-primary-100 text-primary-600' : 'bg-emerald-100 text-emerald-600'
-                }`}>
-                  {contact.type === 'group' ? <Users className="w-5 h-5" /> : <User className="w-5 h-5" />}
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center bg-primary-100 text-primary-600`}>
+                  <Users className="w-5 h-5" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between">
-                    <p className="font-semibold text-sm text-gray-800 truncate">{contact.name}</p>
-                    {contact.unread > 0 && (
-                      <span className="w-5 h-5 bg-primary-500 text-white rounded-full text-xs flex items-center justify-center shrink-0">{contact.unread}</span>
-                    )}
+                    <p className="font-semibold text-sm text-gray-800 truncate">{chat.eventId?.title || 'Unknown Event'}</p>
                   </div>
-                  <p className="text-xs text-gray-500 truncate">{contact.lastMsg}</p>
+                  <p className="text-xs text-gray-500 truncate">{chat.members?.length || 0} members</p>
                 </div>
               </button>
             ))}
@@ -90,78 +143,92 @@ export default function Chat() {
         </div>
 
         {/* Chat Area */}
-        <div className="flex-1 flex flex-col">
-          {/* Chat header */}
-          <div className="p-4 border-b border-gray-100 flex items-center gap-3">
-            {/* Mobile tabs */}
-            <div className="flex md:hidden bg-gray-100 rounded-lg p-0.5 mr-2">
-              <button onClick={() => setActiveTab('group')}
-                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${activeTab === 'group' ? 'bg-white shadow-sm text-primary-600' : 'text-gray-500'}`}>
-                Group
-              </button>
-              <button onClick={() => setActiveTab('direct')}
-                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${activeTab === 'direct' ? 'bg-white shadow-sm text-primary-600' : 'text-gray-500'}`}>
-                Direct
-              </button>
-            </div>
-            <div className={`w-9 h-9 rounded-full flex items-center justify-center ${
-              activeTab === 'group' ? 'bg-primary-100 text-primary-600' : 'bg-emerald-100 text-emerald-600'
-            }`}>
-              {activeTab === 'group' ? <Hash className="w-5 h-5" /> : <User className="w-5 h-5" />}
-            </div>
-            <div>
-              <p className="font-semibold text-gray-800 text-sm">
-                {activeTab === 'group' ? 'Flood Relief Camp' : (isAdmin ? 'Aarav Sharma' : 'Admin (NGO)')}
-              </p>
-              <p className="text-xs text-gray-500">
-                {activeTab === 'group' ? '6 members • Group Chat' : 'Direct Message'}
-              </p>
-            </div>
-          </div>
-
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/50">
-            {currentMessages.map(msg => (
-              <div key={msg.id} className={`flex ${msg.isAdmin === isAdmin ? 'justify-end' : 'justify-start'}`}>
-                <div className={`chat-bubble max-w-[75%] ${
-                  msg.isAdmin === isAdmin
-                    ? 'bg-primary-500 text-white rounded-2xl rounded-br-md'
-                    : 'bg-white border border-gray-100 text-gray-800 rounded-2xl rounded-bl-md shadow-sm'
-                }`}>
-                  {activeTab === 'group' && msg.isAdmin !== isAdmin && (
-                    <p className={`text-xs font-semibold mb-1 ${msg.isAdmin === isAdmin ? 'text-primary-100' : 'text-primary-600'}`}>
-                      {msg.sender}
-                    </p>
-                  )}
-                  <p className="text-sm px-4 py-2">{msg.text}</p>
-                  <p className={`text-[10px] px-4 pb-2 ${msg.isAdmin === isAdmin ? 'text-primary-200' : 'text-gray-400'}`}>
-                    {msg.time}
+        {activeChat ? (
+          <div className="flex-1 flex flex-col min-w-0">
+            {/* Chat header */}
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full flex items-center justify-center bg-primary-100 text-primary-600">
+                  <Hash className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-800 text-sm">
+                    {activeChat.eventId?.title}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {activeChat.members?.length} members • Group Chat
                   </p>
                 </div>
               </div>
-            ))}
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* Input */}
-          <form onSubmit={handleSend} className="p-4 border-t border-gray-100 bg-white">
-            <div className="flex items-center gap-3">
-              <input
-                value={message}
-                onChange={e => setMessage(e.target.value)}
-                placeholder="Type a message..."
-                className="flex-1 px-4 py-3 bg-gray-50 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400 text-sm transition-all"
-              />
-              <button
-                type="submit"
-                disabled={!message.trim()}
-                className="w-11 h-11 bg-primary-500 hover:bg-primary-600 disabled:bg-gray-200 text-white disabled:text-gray-400 rounded-xl flex items-center justify-center transition-all shrink-0"
-              >
-                <Send className="w-5 h-5" />
-              </button>
+              
+              {isAdmin && (
+                <button 
+                  onClick={handleDeleteChat}
+                  className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                  title="Delete Group Chat"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              )}
             </div>
-          </form>
-        </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/50">
+              {messages.length === 0 && (
+                <div className="text-center text-gray-400 py-10 text-sm">No messages yet. Say hi!</div>
+              )}
+              {messages.map((msg, index) => {
+                const isMe = String(msg.senderId?._id || msg.senderId) === String(user?._id);
+                return (
+                  <div key={msg._id || index} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                    <p className={`text-[10px] font-bold mb-1 px-1 ${
+                      isMe ? 'text-gray-500' : (msg.senderRole === 'admin' ? 'text-primary-600' : 'text-emerald-600')
+                    }`}>
+                      {isMe ? 'You' : (msg.senderName || msg.senderId?.name || 'User')}
+                    </p>
+                    <div className={`chat-bubble max-w-[85%] ${
+                      isMe
+                        ? 'bg-primary-500 text-white rounded-2xl rounded-tr-none shadow-md'
+                        : 'bg-white border border-gray-100 text-gray-800 rounded-2xl rounded-tl-none shadow-sm'
+                    }`}>
+                      <p className="text-sm px-4 py-2 leading-relaxed">{msg.text}</p>
+                      <div className={`flex items-center justify-end px-4 pb-2 gap-1`}>
+                        <p className={`text-[9px] ${isMe ? 'text-primary-100' : 'text-gray-400'}`}>
+                          {new Date(msg.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input */}
+            <form onSubmit={handleSend} className="p-4 border-t border-gray-100 bg-white">
+              <div className="flex items-center gap-3">
+                <input
+                  value={message}
+                  onChange={e => setMessage(e.target.value)}
+                  placeholder="Type a message..."
+                  className="flex-1 px-4 py-3 bg-gray-50 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400 text-sm transition-all"
+                />
+                <button
+                  type="submit"
+                  disabled={!message.trim()}
+                  className="w-11 h-11 bg-primary-500 hover:bg-primary-600 disabled:bg-gray-200 text-white disabled:text-gray-400 rounded-xl flex items-center justify-center transition-all shrink-0"
+                >
+                  <Send className="w-5 h-5" />
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center text-gray-400">
+            <MessageCircle className="w-12 h-12 mb-4 opacity-50 text-primary-300" />
+            <p>Select a chat to start messaging</p>
+          </div>
+        )}
       </div>
     </div>
   );

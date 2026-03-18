@@ -1,20 +1,35 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../contexts/AppContext';
-import { Mail, Lock, Eye, EyeOff, Shield, ArrowRight } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, Shield, ArrowRight, Loader2 } from 'lucide-react';
 
 export default function Login() {
   const [role, setRole] = useState('admin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
-  const { login } = useApp();
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const { login, addToast, fetchEvents, fetchVolunteers } = useApp();
   const navigate = useNavigate();
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    login({ email, role, name: role === 'admin' ? 'Admin (NGO)' : 'Aarav Sharma' });
-    navigate(role === 'admin' ? '/admin' : '/volunteer');
+    setError('');
+    setSubmitting(true);
+    try {
+      const user = await login({ email, password });
+      addToast(`Welcome back, ${user.name}!`, 'success');
+      // Fetch data after login
+      await Promise.all([fetchEvents(), fetchVolunteers()]);
+      navigate(user.role === 'admin' ? '/admin' : '/volunteer');
+    } catch (err) {
+      const msg = err.response?.data?.message || err.message || 'Login failed';
+      setError(msg);
+      addToast(msg, 'danger');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -30,10 +45,10 @@ export default function Login() {
             <div className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center">
               <Shield className="w-6 h-6" />
             </div>
-            <span className="text-2xl font-bold">VolunteerAI</span>
+            <span className="text-2xl font-bold">Volunteer</span>
           </div>
           <h2 className="text-4xl font-bold leading-tight mb-4">
-            AI-Powered<br />Volunteer<br />Coordination
+             <br />Volunteer<br />Coordination System
           </h2>
           <p className="text-primary-100 text-lg max-w-md">
             Streamline volunteer management with intelligent matching, real-time tracking, and automated coordination.
@@ -80,6 +95,12 @@ export default function Login() {
             </button>
           </div>
 
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+              {error}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
@@ -89,7 +110,7 @@ export default function Login() {
                   type="email"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
-                  placeholder="your@email.com"
+                  placeholder={role === 'admin' ? 'admin@ngo.org' : 'aarav@volunteer.com'}
                   className="input-field pl-12"
                   required
                 />
@@ -114,10 +135,17 @@ export default function Login() {
               </div>
             </div>
 
-            <button type="submit" className="btn-primary w-full flex items-center justify-center gap-2 py-3">
-              Sign In <ArrowRight className="w-4 h-4" />
+            <button type="submit" disabled={submitting} className="btn-primary w-full flex items-center justify-center gap-2 py-3 disabled:opacity-60">
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              {submitting ? 'Signing in...' : 'Sign In'}
             </button>
           </form>
+
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-700 text-xs">
+            <strong>Demo credentials:</strong><br />
+            Admin: admin@ngo.org / admin123<br />
+            Volunteer: aarav@volunteer.com / vol123
+          </div>
 
           <p className="mt-6 text-center text-sm text-gray-500">
             Don't have an account?{' '}

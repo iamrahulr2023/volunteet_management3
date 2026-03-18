@@ -1,15 +1,25 @@
 import { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useApp } from '../../contexts/AppContext';
 import RealMap from '../../components/RealMap';
 import { Play, Square, MapPin, Clock, AlertTriangle, CheckCircle, Timer } from 'lucide-react';
 
 export default function ActiveEvent() {
-  const { addToast } = useApp();
+  const { addToast, socket, user } = useApp();
+  const location = useLocation();
+  const event = location.state?.event;
   const [isWorking, setIsWorking] = useState(false);
   const [geoStatus, setGeoStatus] = useState('inside'); // inside | outside
   const [elapsed, setElapsed] = useState(0);
   const [startTime, setStartTime] = useState(null);
   const timerRef = useRef(null);
+  
+  // To track live location locally on the map
+  const [myPos, setMyPos] = useState([19.076, 72.8777]);
+  const watchIdRef = useRef(null);
+
+  // Use the actual event ID if present, else fallback
+  const activeEventId = event?._id || event?.id || 'dummy-event-id';
 
   const startWork = () => {
     setIsWorking(true);
@@ -38,9 +48,29 @@ export default function ActiveEvent() {
       timerRef.current = setInterval(() => {
         setElapsed(prev => prev + 1);
       }, 1000);
+      
+      if (navigator.geolocation && socket) {
+        watchIdRef.current = navigator.geolocation.watchPosition(
+          (pos) => {
+            const { latitude, longitude } = pos.coords;
+            setMyPos([latitude, longitude]);
+            // Emit to backend
+            socket.emit('update_location', { lat: latitude, lng: longitude, eventId: activeEventId });
+          },
+          (err) => console.error(err),
+          { enableHighAccuracy: true }
+        );
+      }
+    } else {
+      if (watchIdRef.current && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
     }
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [isWorking]);
+    return () => { 
+      if (timerRef.current) clearInterval(timerRef.current); 
+      if (watchIdRef.current && navigator.geolocation) navigator.geolocation.clearWatch(watchIdRef.current);
+    };
+  }, [isWorking, socket]);
 
   const formatTime = (seconds) => {
     const h = Math.floor(seconds / 3600);
@@ -49,11 +79,20 @@ export default function ActiveEvent() {
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  if (!event) {
+    return (
+      <div className="text-center py-20 text-gray-500 animate-fade-in">
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">No Active Event Selected</h2>
+        <p>Please select an accepted event from your dashboard to view this page.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="text-2xl font-bold text-gray-800">Active Event</h1>
-        <p className="text-gray-500 text-sm mt-1">Flood Relief Camp — Mumbai Central</p>
+        <p className="text-gray-500 text-sm mt-1">{event.name} — {event.location}</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -97,9 +136,9 @@ export default function ActiveEvent() {
             </div>
 
             <RealMap
-              center={[19.076, 72.8777]}
+              center={myPos}
               radius={300}
-              markers={[{ id: 1, name: 'You', status: geoStatus === 'inside' ? 'active' : 'out', lat: 19.076, lng: 72.8777 }]}
+              markers={[{ id: 1, name: 'You', status: geoStatus === 'inside' ? 'active' : 'out', lat: myPos[0], lng: myPos[1] }]}
               showCurrentLocation={true}
               height="260px"
               zoom={15}
@@ -165,10 +204,10 @@ export default function ActiveEvent() {
           <div className="card">
             <h3 className="font-semibold text-gray-800 mb-3">Event Details</h3>
             <div className="space-y-2 text-sm">
-              <p className="text-gray-500">Event: <span className="text-gray-800 font-medium">Flood Relief Camp</span></p>
-              <p className="text-gray-500">Location: <span className="text-gray-800 font-medium">Mumbai Central</span></p>
-              <p className="text-gray-500">Date: <span className="text-gray-800 font-medium">March 20, 2026</span></p>
-              <p className="text-gray-500">Radius: <span className="text-gray-800 font-medium">300m</span></p>
+              <p className="text-gray-500">Event: <span className="text-gray-800 font-medium">{event.name}</span></p>
+              <p className="text-gray-500">Location: <span className="text-gray-800 font-medium">{event.location}</span></p>
+              <p className="text-gray-500">Date: <span className="text-gray-800 font-medium">{event.date}</span></p>
+              <p className="text-gray-500">Radius: <span className="text-gray-800 font-medium">{event.radius ? event.radius * 1000 : 300}m</span></p>
             </div>
           </div>
         </div>

@@ -3,22 +3,46 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../contexts/AppContext';
 import { SKILLS } from '../data/mockData';
 import MultiSelect from '../components/MultiSelect';
-import { Shield, ArrowRight, User, Mail, Lock, Phone, MapPin, Calendar } from 'lucide-react';
+import { Shield, ArrowRight, User, Mail, Lock, Phone, MapPin, Calendar, Loader2 } from 'lucide-react';
 
 export default function Signup() {
   const [role, setRole] = useState('admin');
   const [form, setForm] = useState({
     ngoName: '', name: '', email: '', password: '', phone: '', location: '', availability: '', skills: [],
   });
-  const { login } = useApp();
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const { signup, addToast, fetchEvents, fetchVolunteers } = useApp();
   const navigate = useNavigate();
 
   const update = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    login({ ...form, role, name: role === 'admin' ? form.ngoName : form.name });
-    navigate(role === 'admin' ? '/admin' : '/volunteer');
+    setError('');
+    setSubmitting(true);
+    try {
+      const payload = {
+        name: role === 'admin' ? form.ngoName : form.name,
+        email: form.email,
+        password: form.password,
+        role,
+        phone: form.phone || '',
+        skills: form.skills || [],
+        location: { lat: 0, lng: 0 },
+      };
+
+      const user = await signup(payload);
+      addToast(`Welcome, ${user.name}! Account created.`, 'success');
+      await Promise.all([fetchEvents(), fetchVolunteers()]);
+      navigate(user.role === 'admin' ? '/admin' : '/volunteer');
+    } catch (err) {
+      const msg = err.response?.data?.message || err.message || 'Signup failed';
+      setError(msg);
+      addToast(msg, 'danger');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -74,6 +98,12 @@ export default function Signup() {
             </button>
           </div>
 
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+              {error}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-5">
             {role === 'admin' ? (
               <>
@@ -95,7 +125,7 @@ export default function Signup() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
                   <div className="relative">
                     <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <input type="password" value={form.password} onChange={e => update('password', e.target.value)} placeholder="••••••••" className="input-field pl-12" required />
+                    <input type="password" value={form.password} onChange={e => update('password', e.target.value)} placeholder="••••••••" className="input-field pl-12" required minLength={6} />
                   </div>
                 </div>
               </>
@@ -106,6 +136,20 @@ export default function Signup() {
                   <div className="relative">
                     <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                     <input type="text" value={form.name} onChange={e => update('name', e.target.value)} placeholder="Your full name" className="input-field pl-12" required />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
+                  <div className="relative">
+                    <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                    <input type="email" value={form.email} onChange={e => update('email', e.target.value)} placeholder="your@email.com" className="input-field pl-12" required />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                    <input type="password" value={form.password} onChange={e => update('password', e.target.value)} placeholder="••••••••" className="input-field pl-12" required minLength={6} />
                   </div>
                 </div>
                 <div>
@@ -141,8 +185,9 @@ export default function Signup() {
               </>
             )}
 
-            <button type="submit" className="btn-primary w-full flex items-center justify-center gap-2 py-3">
-              Create Account <ArrowRight className="w-4 h-4" />
+            <button type="submit" disabled={submitting} className="btn-primary w-full flex items-center justify-center gap-2 py-3 disabled:opacity-60">
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              {submitting ? 'Creating...' : 'Create Account'}
             </button>
           </form>
 
